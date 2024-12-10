@@ -1,0 +1,222 @@
+# -------------------------------------------
+# Commands to run this compose file:
+# - docker-compose -p microservices-comp3095 -f docker-compose.yml up -d
+#   This command will start the containers in detached mode (-d) without rebuilding the images (if they already exist).
+#
+#  docker-compose -p comp3095-microservices-ecommerce -f docker-compose.yml up -d --build
+#
+# - docker-compose -f docker-compose.yml up -d --build
+#   This command forces the rebuild of images, even if they already exist, before starting the containers.
+# -------------------------------------------
+
+# Specify the version of Docker Compose file format to use.
+# 3.9 is the latest stable version as of 2024.
+version: '3.9'
+
+# Define services (containers) that will run as part of the microservices stack.
+services:
+
+  # REMEMBER to Update C:\Windows\System32\drivers\etc\hosts file to include "keycloak"
+  keycloak:
+    container_name: keycloak
+    hostname: keycloak
+    image: quay.io/keycloak/keycloak:24.0.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      DB_VENDOR: postgres
+      DB_ADDR: postgres-keycloak
+      DB_DATABASE: keycloak
+      DB_USER: admin
+      DB_PASSWORD: password
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: password
+      ROOT_LOGLEVEL: DEBUG                               # Set root logging level to DEBUG
+      JBOSS_LOG_MANAGER_ROOT_LOGGER: DEBUG,stdout, FILE  # Set log level for Keycloak components
+    ports:
+      - "136:136"
+    volumes:
+      - ./local-docker-files/keycloak/realms/:/opt/keycloak/data/import/
+    depends_on:
+      - postgres-keycloak
+    networks:
+      - spring
+
+  api-gateway:
+    image: api-gateway
+    #image: ssantilli/api-gateway:latest
+    #pull_policy: always
+    ports:
+      - "9000:9000"
+    build: # Build the image using the Dockerfile in the current directory.
+      context: ./api-gateway                   # The context provides the build context.
+      dockerfile: ./Dockerfile                 # The dockerfile specifies the name of the Dockerfile to use.
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_APPLICATION_JSON={"logging":{"level":{"root":"INFO","ca.gbc.apigateway":"DEBUG"}}}:
+    container_name: api-gateway
+    networks:
+      - spring
+
+  inventory-service:
+    image: inventory-service
+    #image: ssantilli/inventory-service:latest
+    #pull_policy: always
+    ports:
+      - "8083:8083"
+    build:
+      context: ./inventory-service
+      dockerfile: ./Dockerfile
+    container_name: inventory-service
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-inventory:5432/inventory-service
+      - SPRING_DATASOURCE_USERNAME=admin
+      - SPRING_DATASOURCE_PASSWORD=password
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=none
+      - SPRING_PROFILES_ACTIVE=docker
+    depends_on:
+      - postgres-inventory
+    #restart: unless-stopped
+    networks:
+      - spring
+
+  order-service:
+    image: order-service
+    #image: ssantilli/order-service:latest
+    #pull_policy: always
+    ports:
+      - "8082:8082"
+    build:
+      context: ./order-service
+      dockerfile: ./Dockerfile
+    container_name: order-service
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-order:5432/order-service
+      - SPRING_DATASOURCE_USERNAME=admin
+      - SPRING_DATASOURCE_PASSWORD=password
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=none
+      - SPRING_PROFILES_ACTIVE=docker
+    depends_on:
+      - postgres-order
+    #restart: unless-stopped
+    networks:
+      - spring
+
+  product-service:
+    image: product-service
+    ports:
+      - "8084:8084"
+    build:
+      context: ./product-service  # The directory where the Dockerfile is located.
+      dockerfile: ./Dockerfile     # Specify the Dockerfile to use for building the image.
+    container_name: product-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker  # This tells Spring Boot to use the "docker" profile, which could be configured for containerized environments.
+    depends_on:
+      - mongodb
+    networks:
+      - spring
+
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27018:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password
+    volumes:
+      - ./data/mongo/products:/data/db  # The database will persist data here on the host machine.
+      - ./init/mongo/docker-entrypoint-initdb.d/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro  # Initialize MongoDB with data from this script.
+    container_name: mongodb
+    #restart: unless-stopped  # The container will restart if it crashes or the Docker daemon restarts.
+    #command: mongod --auth  # Ensures MongoDB requires authentication.
+    networks:
+      - spring
+
+  postgres-keycloak:
+    container_name: postgres-keycloak
+    image: postgres
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      PGDATA: /data/postgres
+    volumes:
+      - ./data/postgres/postgres-keycloak:/data/postgres
+    ports:
+      - "5431:5432"
+    #restart: unless-stopped
+    networks:
+      - spring
+
+  postgres-inventory:
+    container_name: postgres-inventory
+    image: postgres
+    environment:
+      POSTGRES_DB: inventory-service
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      PGDATA: /data/postgres
+    volumes:
+      - ./data/postgres/postgres-inventory:/data/postgres
+      - ./init/postgres/inventory/init.sql:/docker-entrypoint-initdb.d/init.sql  # mount the init.sql script
+    ports:
+      - "5434:5432"
+    #restart: unless-stopped
+    networks:
+      - spring
+
+  postgres-order:
+    container_name: postgres-order
+    image: postgres
+    environment:
+      POSTGRES_DB: order-service
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      PGDATA: /data/postgres
+    volumes:
+      - ./data/postgres/postgres-order:/data/postgres                        # mount the database
+      - ./init/postgres/order/init.sql:/docker-entrypoint-initdb.d/init.sql  # mount the init.sql script
+    ports:
+      - "5433:5432"
+    #restart: unless-stopped
+    networks:
+      - spring
+
+  pgpadmin:
+    image: dpage/pgadmin4
+    #restart: always
+    ports:
+      - "8888:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=user@domain.ca
+      - PGADMIN_DEFAULT_PASSWORD=password
+    container_name: pgadmin
+    networks:
+      - spring
+
+  # Mongo-Express is a web-based MongoDB admin interface to manage MongoDB visually.
+  mongo-express:
+    image: mongo-express
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=admin
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=password
+      - ME_CONFIG_MONGODB_SERVER=mongodb  # Connect Mongo-Express to the MongoDB container by name.
+    container_name: mongo-express
+    #restart: unless-stopped
+    depends_on:
+      - mongodb
+    networks:
+      - spring
+
+# Optional volumes section for persisting data.
+volumes:
+  mongo-db:
+    driver: local  # Use local driver for persisting data on the host machine.
+
+# Define a custom network called 'spring' using the bridge driver.
+# Containers on this network can communicate with each other using their container names.
+networks:
+  spring:
+    driver: bridge  # Bridge network allows isolated communication between containers.
